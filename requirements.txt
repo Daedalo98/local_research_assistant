@@ -1,0 +1,13 @@
+streamlit
+vosk
+pyaudio
+requests
+chromadb
+sentence-transformers
+PyMuPDF
+langchain-community
+numpy
+pandas
+faster-whisper
+rank_bm25
+langchain-text-splitters
