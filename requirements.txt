@@ -11,3 +11,6 @@ pandas
 faster-whisper
 rank_bm25
 langchain-text-splitters
+google-genai
+python-dotenv
+edge-tts
