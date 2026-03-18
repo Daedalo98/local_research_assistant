@@ -3,9 +3,10 @@ import requests
 from gemini_manager import GeminiManager
 
 class TrustPipeline:
-    def __init__(self, model_name):
+    def __init__(self, model_name, zotero_client=None):
         self.manager = GeminiManager()
         self.model = model_name
+        self.zotero_client = zotero_client
 
     def format_sources(self, retrieved_chunks):
         formatted = ""
@@ -41,19 +42,37 @@ class TrustPipeline:
         return self.manager.generate_sync(user_prompt, system, self.model)
 
     def step_b_retrieve_citations(self, pulled_chunks):
-        extracted_dois = []
+        import asyncio
         citations = []
-        for chunk in pulled_chunks:
-            text = chunk.get('text', str(chunk)) if isinstance(chunk, dict) else str(chunk)
-            filename = chunk.get('filename', 'Unknown') if isinstance(chunk, dict) else 'Unknown'
-            
-            dois = self.extract_dois(text)
-            for doi in dois:
-                if doi not in extracted_dois:
-                    extracted_dois.append(doi)
-                    cit = self.fetch_citation(doi)
-                    citations.append(f"[{filename} - {doi}] {cit}")
         
+        loop = None
+        if self.zotero_client:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+        for chunk in pulled_chunks:
+            filename = chunk.get('filename', 'Unknown') if isinstance(chunk, dict) else 'Unknown'
+            filepath = chunk.get('filepath', '') if isinstance(chunk, dict) else ''
+            
+            if filepath.startswith("zotero://"):
+                item_key = filepath.replace("zotero://", "")
+                if self.zotero_client and loop:
+                    try:
+                        cit_obj = loop.run_until_complete(self.zotero_client.generate_citation([item_key], "apa"))
+                        # zotero_client might return a string directly or a JSON output. 
+                        # Handle potential JSON parsing error just in case.
+                        cit = cit_obj
+                        
+                        cit_entry = f"[{filename}] {cit}"
+                        if cit_entry not in citations:
+                            citations.append(cit_entry)
+                        continue
+                    except Exception as e:
+                        print(f"Failed to generate Zotero citation for {item_key}: {e}")
+                        
         return citations
 
     def step_c_create_academic_paragraph(self, user_idea, enhanced_text, citations_text, prompt_instruction):
@@ -66,11 +85,3 @@ class TrustPipeline:
             "Format the output as a coherent academic section. At the bottom, include a distinct 'References' section containing the APA citations provided."
         )
         return self.manager.generate_sync(user_prompt, system, self.model)
-
-    def get_versatile_prompts(self):
-        return {
-            "Standard Academic Integration": "Integrate the knowledge seamlessly into the text, maintaining a formal academic tone.",
-            "Literature Review Style": "Write this as a literature review section, comparing and contrasting the sources against the user's base idea.",
-            "Critical Analysis": "Critically analyze the base text in light of the sources, pointing out strengths, potential gaps, and backing claims with citations.",
-            "Direct Support": "Use the sourced information primarily to strongly back and validate the claims made in the user's text."
-        }

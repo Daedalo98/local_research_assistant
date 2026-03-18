@@ -1,0 +1,11 @@
+[Zotero MCP] Starting server...
+[Zotero MCP] Services initialized
+[Zotero MCP] Server running on stdio
+[Zotero MCP] Connected to user 19984318
+Connected. Fetching attachments...
+[Tool Call] search_items
+Attachments found: 5
+Trying to extract PDF for TXT592MM: PDF
+[Tool Call] extract_pdf_text
+[Error Details] PDF full-text not available. The item may not have an attached PDF, or the PDF has not been indexed by Zotero yet. To index PDFs, open Zotero desktop and let it index your attachments.
+Search failed: Expecting value: line 1 column 1 (char 0)

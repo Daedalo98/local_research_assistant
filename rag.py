@@ -42,11 +42,13 @@ class AdvancedRAG:
         self.bm25_docs = []
         self.bm25_metadata = []
 
-    def _set_active_collection(self, active_model):
+    def _set_active_collection(self, active_model, collection_id=None):
         """Sets the collection and bm25 indices based on the active embedding model's dimensions"""
         self.emb_fn.active_model = active_model
         safe_model_name = re.sub(r'[^a-zA-Z0-9_-]', '_', active_model)
         self.collection_name = f"academic_pdfs_{safe_model_name}"
+        if collection_id:
+            self.collection_name += f"_{collection_id}"
         
         if active_model == "gemini-embedding-001":
             try:
@@ -185,6 +187,161 @@ class AdvancedRAG:
                 
             if progress_callback:
                 progress_callback(1, 1, "Updating Keyword index...")
+            self._initialize_bm25()
+            
+        return total_chunks
+
+    def embed_zotero_library(self, zotero_client, active_model, collection_id=None, limit=50, chunk_size=1000, chunk_overlap=200, force_rebuild=False, separators=None, progress_callback=None):
+        import asyncio
+        import json
+        
+        self._set_active_collection(active_model, collection_id)
+        if separators is None: separators = ["\n\n", "\n", ".", " ", ""]
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=separators)
+        
+        existing_filepaths = set()
+        if force_rebuild:
+            try:
+                self.client.delete_collection(name=self.collection_name)
+                self.collection = self.client.create_collection(name=self.collection_name, embedding_function=self.emb_fn)
+            except ValueError: pass
+        else:
+            try:
+                existing_data = self.collection.get()
+                if existing_data and existing_data['metadatas']:
+                    existing_filepaths = {m.get('filepath') for m in existing_data['metadatas'] if m and 'filepath' in m}
+            except Exception as e:
+                print(f"Failed to check existing collection data: {e}")
+            
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        if progress_callback: progress_callback(0, 1, "Fetching items from Zotero...")
+        
+        items = []
+        try:
+            kwargs = {}
+            if collection_id: kwargs["collection"] = collection_id
+            for start in range(0, limit, 100):
+                current_limit = min(100, limit - start)
+                items_str = loop.run_until_complete(zotero_client.search_items(query="", limit=current_limit, start=start, **kwargs))
+                new_items = json.loads(items_str)
+                if not isinstance(new_items, list):
+                    new_items = new_items.get("items", []) if isinstance(new_items, dict) else []
+                if not new_items:
+                    break
+                items.extend(new_items)
+        except Exception as e:
+            if progress_callback: progress_callback(1, 1, f"Failed to fetch Zotero items: {e}")
+            return 0
+            
+        # Also specifically fetch PDF attachments to get their text!
+        attachments = []
+        try:
+            kwargs = {"itemType": "attachment"}
+            if collection_id: kwargs["collection"] = collection_id
+            for start in range(0, limit, 100):
+                current_limit = min(100, limit - start)
+                at_str = loop.run_until_complete(zotero_client.search_items(query="", limit=current_limit, start=start, **kwargs))
+                at_json = json.loads(at_str)
+                new_atts = at_json.get("items", []) if isinstance(at_json, dict) else (at_json if isinstance(at_json, list) else [])
+                if not new_atts: break
+                attachments.extend(new_atts)
+        except Exception as e:
+            pass
+
+        docs, metadatas, ids = [], [], []
+        doc_id = 0
+        try:
+             existing_data = self.collection.get()
+             if existing_data and existing_data['ids']:
+                 id_nums = [int(orig_id.split('_')[1]) for orig_id in existing_data['ids'] if '_' in orig_id]
+                 if id_nums: doc_id = max(id_nums) + 1
+        except Exception: pass
+        
+        total_items = len(items) + len(attachments)
+        if total_items == 0:
+            if progress_callback: progress_callback(1, 1, "No items found in Zotero.")
+            return 0
+
+        # Step 1: Process parent items (Metadata)
+        processed_count = 0
+        for item in items:
+            processed_count += 1
+            title = item.get("title") or item.get("data", {}).get("title", "Unknown Title")
+            key = item.get("key", "unknown")
+            item_type = item.get("itemType") or item.get("data", {}).get("itemType", "")
+            
+            # Skip attachments here, we do them next
+            if item_type == "attachment":
+                continue
+                
+            if progress_callback: progress_callback(processed_count, total_items, f"Processing Metadata context: {title[:30]}...")
+            
+            abstract = item.get("abstractNote") or item.get("data", {}).get("abstractNote", "")
+            creators = item.get("creators") or item.get("data", {}).get("creators", [])
+            authors = ", ".join([c.get("lastName", "") for c in creators if "lastName" in c])
+            text = f"Title: {title}\nAuthors: {authors}\nAbstract: {abstract}"
+            
+            # Make sure we don't embed empty tombstones
+            if not title and not abstract:
+                continue
+                
+            # Skip if already embedded natively
+            if f"zotero://{key}" in existing_filepaths and not force_rebuild:
+                if progress_callback: progress_callback(processed_count, total_items, f"Skipping (Already Indexed): {title[:30]}...")
+                continue
+                
+            chunks = text_splitter.split_text(text)
+            for chunk in chunks:
+                docs.append(chunk)
+                metadatas.append({"filename": f"Zotero: {title}", "filepath": f"zotero://{key}"})
+                ids.append(f"chunk_{doc_id}")
+                doc_id += 1
+
+        # Step 2: Process Attachments (Extract Full PDF Text)
+        for att in attachments:
+            processed_count += 1
+            title = att.get("title") or att.get("data", {}).get("title", "PDF Document")
+            key = att.get("key", "unknown")
+            parent_key = att.get("parentItem") or att.get("data", {}).get("parentItem", key)
+            
+            if f"zotero://{parent_key}" in existing_filepaths and not force_rebuild:
+                if progress_callback: progress_callback(processed_count, total_items, f"Skipping PDF (Already Indexed): {title[:30]}...")
+                continue
+            
+            if progress_callback: progress_callback(processed_count, total_items, f"Extracting PDF text: {title[:30]}...")
+            
+            # Try to grab the full text via the extract_pdf_text MCP tool!
+            try:
+                pdf_text_json = loop.run_until_complete(zotero_client.extract_pdf_text(key))
+                parsed_pdf = json.loads(pdf_text_json)
+                pdf_content = parsed_pdf.get("content", "")
+                
+                if pdf_content:
+                    chunks = text_splitter.split_text(pdf_content)
+                    for chunk in chunks:
+                        docs.append(chunk)
+                        # We use the parent item key but append the attachment key for robust local lookups!
+                        metadatas.append({"filename": f"Zotero PDF: {title}", "filepath": f"zotero://{parent_key}/{key}"})
+                        ids.append(f"chunk_{doc_id}")
+                        doc_id += 1
+            except Exception as e:
+                pass
+                
+        # Inject into VectorDB
+        total_chunks = len(docs)
+        if total_chunks > 0:
+            batch_size = 100
+            for i in range(0, total_chunks, batch_size):
+                if progress_callback: progress_callback(i, total_chunks, f"Embedding chunk {i} out of {total_chunks}...")
+                batch_docs = docs[i:i+batch_size]
+                batch_metas = metadatas[i:i+batch_size]
+                batch_ids = ids[i:i+batch_size]
+                embeddings = self.manager.get_embeddings_batch(batch_docs, active_model)
+                self.collection.add(documents=batch_docs, embeddings=embeddings, metadatas=batch_metas, ids=batch_ids)
+                
+            if progress_callback: progress_callback(1, 1, "Updating Keyword index...")
             self._initialize_bm25()
             
         return total_chunks

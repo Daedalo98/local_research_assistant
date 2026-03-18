@@ -1,4 +1,11 @@
 {
-    "Default Academic": "Translate my speech into formal academic prose. Fix any grammar and structure.",
-    "std_review": "Translate my speech into formal academic prose. Fix any grammar and structure. be concise."
+    "Default Academic": "Translate my speech into formal academic prose in Markdown format. Fix grammar and structure.",
+    "Expand & Integrate": "Expand upon the user's base idea by deeply integrating information from the provided sources. Ensure all source contributions are cited inline.",
+    "Scientific Article Style": "Rewrite the discourse to make it sound like a high-quality scientific or academic article. Improve the vocabulary, structure, and academic tone while synthesizing the sources.",
+    "Retrieval & Summarization Focus": "Focus heavily on summarizing the retrieved information. Present the core findings of the sources clearly and concisely, using the base text only as context.",
+    "Fully Cited Introduction": "Transform the text and sources into a fully cited academic introduction. Set up the context, outline the problem using the sources, and conclude with the primary research objective or thesis.",
+    "Standard Academic Integration": "Integrate the knowledge seamlessly into the text, maintaining a formal academic tone.",
+    "Literature Review Style": "Write this as a literature review section, comparing and contrasting the sources against the user's base idea.",
+    "Critical Analysis": "Critically analyze the base text in light of the sources, pointing out strengths, potential gaps, and backing claims with citations.",
+    "Direct Support": "Use the sourced information primarily to strongly back and validate the claims made in the user's text."
 }
